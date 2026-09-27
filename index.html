@@ -235,12 +235,26 @@ async function flush() {
 addEventListener('pagehide', () => { if (saveTimer) flush(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden && saveTimer) flush(); });
 
+// Safari hands back file-backed blobs from IndexedDB that can transiently fail to load
+// (WebKitBlobResource error 1). Copy into memory, retrying, and use the copy from then on.
+async function readBlob(blob) {
+  for (let i = 0; ; i++) {
+    try { return new Blob([await blob.arrayBuffer()], { type: blob.type }); }
+    catch (err) {
+      if (i === 3) throw err;
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
+}
 async function openRecord(rec) {
+  const abort = msg => { alert(msg); if (current) $('sessions').value = current.id; };
+  try { rec.blob = await readBlob(rec.blob); }
+  catch (err) { console.error(err); return abort('The saved image could not be read from browser storage.'); }
   const url = URL.createObjectURL(rec.blob);
   const im = new Image();
   im.src = url;
   try { await im.decode(); }
-  catch { URL.revokeObjectURL(url); alert('That file could not be read as an image.'); return; }
+  catch { URL.revokeObjectURL(url); return abort('That file could not be read as an image.'); }
   if (imgUrl) URL.revokeObjectURL(imgUrl);
   imgUrl = url;
 
