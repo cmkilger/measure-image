@@ -61,6 +61,7 @@
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
   button.danger { border-color: var(--border); color: #dc2626; }
   #saveNote { margin-top: 10px; }
+  #copyScale { margin-top: 8px; max-width: 100%; }
   .none { color: var(--muted); padding: 4px 0; }
   .warn { color: var(--ref); }
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
@@ -101,6 +102,7 @@
   <details open>
     <summary>Known distances <span class="badge" id="refCount">0</span></summary>
     <ul id="refList"></ul>
+    <select id="copyScale" hidden></select>
   </details>
   <details open>
     <summary>Lines <span class="badge" id="lineCount">0</span></summary>
@@ -157,12 +159,16 @@ const toImg = s => ({ x: (s.x - view.x) / view.k, y: (s.y - view.y) / view.k });
 const fmt = n => n.toLocaleString(undefined, { maximumSignificantDigits: 4 });
 
 // Pixels per unit: total reference pixels over total reference length.
-function scale() {
-  if (!data.refs.length) return null;
-  const px = data.refs.reduce((s, r) => s + dist(r.a, r.b), 0);
-  const len = data.refs.reduce((s, r) => s + r.length, 0);
-  return px / len;
+// Known distances win; a scale copied from another image is used only when there are none.
+function scaleOf(d) {
+  if (d.refs.length) {
+    const px = d.refs.reduce((s, r) => s + dist(r.a, r.b), 0);
+    const len = d.refs.reduce((s, r) => s + r.length, 0);
+    return px / len;
+  }
+  return d.imported ? d.imported.pxPerUnit : null;
 }
+const scale = () => scaleOf(data);
 function polyArea(pts) {
   let s = 0;
   for (let i = 0; i < pts.length; i++) {
@@ -180,7 +186,7 @@ const centroid = pts => ({ x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: 
 let db = null, current = null, saveTimer = null, imgUrl = null;
 let records = [];        // {id, name, updated} for every saved image
 
-const emptyData = () => ({ refs: [], lines: [], areas: [] });
+const emptyData = () => ({ refs: [], lines: [], areas: [], imported: null });
 const emptyCounters = () => ({ ref: 0, line: 0, area: 0 });
 
 function tx(mode, fn) {
@@ -211,12 +217,28 @@ async function initStorage() {
   }
 }
 async function refreshList() {
-  records = db ? (await tx('readonly', s => s.getAll())).map(({ id, name, updated }) => ({ id, name, updated })) : [];
+  records = db ? (await tx('readonly', s => s.getAll())).map(r => ({ id: r.id, name: r.name, updated: r.updated, scale: scaleOf(r.data), unit: r.unit })) : [];
   const sel = $('sessions');
   sel.replaceChildren(...[...records].sort((a, b) => b.id - a.id).map(r => h('option', { value: r.id, textContent: r.name })));
   sel.hidden = !records.length;
   if (current) sel.value = current.id;
+  renderCopy();
 }
+function renderCopy() {
+  const sel = $('copyScale');
+  const opts = records.filter(r => r.scale && (!current || r.id !== current.id)).sort((a, b) => b.id - a.id);
+  sel.replaceChildren(h('option', { value: '', textContent: 'Copy scale from…' }),
+    ...opts.map(r => h('option', { value: r.id, textContent: `${r.name} (${fmt(r.scale)} px per ${r.unit})` })));
+  sel.hidden = !img || !opts.length;
+}
+$('copyScale').onchange = e => {
+  const r = records.find(r => r.id === Number(e.target.value));
+  e.target.value = '';
+  if (!r || !img) return;
+  data.imported = { pxPerUnit: r.scale, unit: r.unit, from: r.name };
+  if (!data.refs.length) $('unit').value = r.unit;
+  renderAll(); updateHint();
+};
 function scheduleSave() {
   if (!db || !current || !img) return;
   clearTimeout(saveTimer);
@@ -585,19 +607,39 @@ function renderLists() {
   const sc = scale(), u = unit();
   $('scaleInfo').textContent = sc ? `${fmt(sc)} px per ${u}` : 'No scale yet. Use “Known distance” to mark something of known length.';
 
-  fill('refList', data.refs.map(r => {
+  const refRows = data.refs.map(r => {
     const dev = (dist(r.a, r.b) / r.length / sc - 1) * 100;
     const sub = data.refs.length > 1 ? `${dev >= 0 ? '+' : ''}${dev.toFixed(1)}% vs. combined scale` : `${fmt(dist(r.a, r.b))} px`;
     const input = h('input', { type: 'number', min: 0, step: 'any', value: r.length, title: 'Length' });
     input.onchange = () => { const v = parseFloat(input.value); if (v > 0) r.length = v; renderAll(); };
     const li = item(css('--ref'), `Known ${r.id}`, sub, h('span', {}, input, ' ' + u), () => {
       data.refs = data.refs.filter(x => x !== r);
-      if (!data.refs.length && (tool === 'line' || tool === 'area')) setTool('select');
+      if (!data.refs.length && data.imported) $('unit').value = data.imported.unit;
+      if (!scale() && (tool === 'line' || tool === 'area')) setTool('select');
       renderAll(); updateHint();
     });
     if (Math.abs(dev) > 5) li.querySelector('.sub').classList.add('warn');
     return li;
-  }), 'None');
+  });
+  if (data.imported) {
+    const im = data.imported;
+    let sub = 'Copied scale';
+    let warn = false;
+    if (data.refs.length) {
+      const own = scaleOf({ refs: data.refs });
+      const diff = (own / im.pxPerUnit - 1) * 100;
+      sub = `Not used. Your known distances differ by ${Math.abs(diff).toFixed(1)}%.`;
+      warn = Math.abs(diff) > 5;
+    }
+    const li = item(css('--ref'), `Scale from ${im.from}`, sub, h('span', { className: 'val' }, `${fmt(im.pxPerUnit)} px per ${im.unit}`), () => {
+      data.imported = null;
+      if (!scale() && (tool === 'line' || tool === 'area')) setTool('select');
+      renderAll(); updateHint();
+    });
+    if (warn) li.querySelector('.sub').classList.add('warn');
+    refRows.push(li);
+  }
+  fill('refList', refRows, 'None');
 
   fill('lineList', data.lines.map(l =>
     item(css('--line'), `Line ${l.id}`, null, h('span', { className: 'val' }, `${fmt(dist(l.a, l.b) / sc)} ${u}`),
@@ -608,7 +650,7 @@ function renderLists() {
       h('span', { className: 'val' }, `${fmt(polyArea(a.pts) / (sc * sc))} ${u}²`),
       () => { data.areas = data.areas.filter(x => x !== a); renderAll(); })), 'None');
 
-  $('refCount').textContent = data.refs.length;
+  $('refCount').textContent = data.refs.length + (data.imported ? 1 : 0);
   $('lineCount').textContent = data.lines.length;
   $('areaCount').textContent = data.areas.length;
   $('clearData').disabled = !(data.refs.length || data.lines.length || data.areas.length);
