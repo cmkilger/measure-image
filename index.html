@@ -294,7 +294,9 @@ async function openRecord(rec) {
   }
   img = im;
   current = { id: rec.id, name: rec.name, blob: rec.blob };
-  data = rec.data; counters = rec.counters;
+  // Records saved before a data field existed (e.g. paths) lack it; fill in defaults.
+  data = { ...emptyData(), ...rec.data };
+  counters = { ...emptyCounters(), ...rec.counters };
   $('unit').value = rec.unit;
   draft = []; pendingRef = null;
   setTool('select');
