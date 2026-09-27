@@ -4,6 +4,8 @@ Measure distances and areas on an image, entirely in the browser. Live at https:
 
 Everything runs locally in a single `index.html`. Images are never uploaded anywhere.
 
+Images and measurements are saved in the browser (IndexedDB), so they're still there after a refresh. The most recent image opens on load, and the toolbar dropdown switches between saved images. **Clear measurements** removes the data but keeps the image. **Delete image** removes both. Clearing site data in the browser also removes saved images.
+
 ## Usage
 
 1. Load an image (choose a file, drag and drop, or paste).
