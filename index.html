@@ -9,11 +9,11 @@
     color-scheme: light dark;
     --bg: #f4f4f5; --panel: #fff; --text: #18181b; --muted: #71717a; --border: #d4d4d8;
     --stage: #e4e4e7; --accent: #2563eb;
-    --ref: #ea580c; --line: #2563eb; --area: #16a34a;
+    --ref: #ea580c; --line: #2563eb; --path: #9333ea; --area: #16a34a;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #18181b; --panel: #27272a; --text: #f4f4f5; --muted: #a1a1aa; --border: #3f3f46;
-            --stage: #111113; --accent: #60a5fa; --ref: #fb923c; --line: #60a5fa; --area: #4ade80; }
+            --stage: #111113; --accent: #60a5fa; --ref: #fb923c; --line: #60a5fa; --path: #c084fc; --area: #4ade80; }
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -77,10 +77,11 @@
     <button data-tool="select" title="Select / move points (V)">Select</button>
     <button data-tool="ref" title="Set a known distance (R)">Known distance</button>
     <button data-tool="line" title="Measure a line (L)">Line</button>
+    <button data-tool="path" title="Measure a multi-point path (P)">Path</button>
     <button data-tool="area" title="Measure an area (A)">Area</button>
     <div class="sep"></div>
     <button id="fit" title="Fit image to view">Fit</button>
-    <button id="finish" class="primary" hidden>Finish area</button>
+    <button id="finish" class="primary" hidden>Finish</button>
     <select id="sessions" title="Saved images" hidden></select>
     <button id="replace" title="Load a different image">New image</button>
   </div>
@@ -107,6 +108,10 @@
   <details open>
     <summary>Lines <span class="badge" id="lineCount">0</span></summary>
     <ul id="lineList"></ul>
+  </details>
+  <details open>
+    <summary>Paths <span class="badge" id="pathCount">0</span></summary>
+    <ul id="pathList"></ul>
   </details>
   <details open>
     <summary>Areas <span class="badge" id="areaCount">0</span></summary>
@@ -149,8 +154,8 @@ let tool = 'select';
 let draft = [];          // points of the shape being drawn (image coordinates)
 let cursor = null;       // last pointer position (screen coordinates)
 let pendingRef = null;   // reference awaiting a length from the dialog
-let data = { refs: [], lines: [], areas: [] };
-let counters = { ref: 0, line: 0, area: 0 };
+let data = { refs: [], lines: [], paths: [], areas: [] };
+let counters = { ref: 0, line: 0, path: 0, area: 0 };
 
 const unit = () => $('unit').value.trim() || 'units';
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -180,14 +185,17 @@ function polyArea(pts) {
 function perimeter(pts) {
   return pts.reduce((s, p, i) => s + dist(p, pts[(i + 1) % pts.length]), 0);
 }
+function pathLength(pts) {
+  return pts.slice(1).reduce((s, p, i) => s + dist(pts[i], p), 0);
+}
 const centroid = pts => ({ x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length });
 
 // ---------- image loading ----------
 let db = null, current = null, saveTimer = null, imgUrl = null;
 let records = [];        // {id, name, updated} for every saved image
 
-const emptyData = () => ({ refs: [], lines: [], areas: [], imported: null });
-const emptyCounters = () => ({ ref: 0, line: 0, area: 0 });
+const emptyData = () => ({ refs: [], lines: [], paths: [], areas: [], imported: null });
+const emptyCounters = () => ({ ref: 0, line: 0, path: 0, area: 0 });
 
 function tx(mode, fn) {
   return new Promise((resolve, reject) => {
@@ -372,11 +380,12 @@ cv.addEventListener('wheel', e => {
 
 // ---------- tools ----------
 function setTool(t) {
-  if ((t === 'line' || t === 'area') && !scale()) t = 'select';
+  if ((t === 'line' || t === 'path' || t === 'area') && !scale()) t = 'select';
   if (t !== tool) draft = [];
   tool = t;
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
-  $('finish').hidden = t !== 'area';
+  $('finish').hidden = t !== 'area' && t !== 'path';
+  $('finish').textContent = t === 'path' ? 'Finish path' : 'Finish area';
   updateHint(); draw();
 }
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => img && setTool(b.dataset.tool));
@@ -387,12 +396,13 @@ addEventListener('keydown', e => {
   if (k === 'v') setTool('select');
   else if (k === 'r') setTool('ref');
   else if (k === 'l') setTool('line');
+  else if (k === 'p') setTool('path');
   else if (k === 'a') setTool('area');
   else if (k === 'escape') { draft = []; draw(); updateHint(); }
   else if (k === 'backspace' && draft.length) { draft.pop(); draw(); updateHint(); e.preventDefault(); }
-  else if (k === 'enter' && tool === 'area') finishArea();
+  else if (k === 'enter' && (tool === 'area' || tool === 'path')) finishShape();
 });
-$('finish').onclick = finishArea;
+$('finish').onclick = finishShape;
 
 function updateHint() {
   let t = '';
@@ -400,18 +410,22 @@ function updateHint() {
   else if (tool === 'select') t = 'Drag a point to move it. Drag empty space to pan, scroll to zoom.';
   else if (tool === 'ref') t = draft.length ? 'Click the second end of the known distance.' : 'Click one end of a known distance.';
   else if (tool === 'line') t = draft.length ? 'Click the end of the line.' : 'Click the start of the line.';
+  else if (tool === 'path') t = draft.length < 2
+    ? 'Click to add points.'
+    : 'Double-click or press Enter to finish. Backspace removes the last point.';
   else if (tool === 'area') t = draft.length < 3
     ? 'Click to add corners.'
     : 'Click the first point, double-click, or press Enter to finish. Backspace removes the last point.';
   if (img && !scale() && tool === 'select') t = 'Set at least one known distance to enable line and area measurement. ' + t;
   $('hintText').textContent = t;
   $('hint').hidden = !t;
-  $('finish').disabled = draft.length < 3;
+  $('finish').disabled = tool === 'path' ? draft.length < 2 : draft.length < 3;
 }
 
-function finishArea() {
-  if (tool !== 'area' || draft.length < 3) return;
-  data.areas.push({ id: ++counters.area, pts: draft });
+function finishShape() {
+  if (tool === 'area' && draft.length >= 3) data.areas.push({ id: ++counters.area, pts: draft });
+  else if (tool === 'path' && draft.length >= 2) data.paths.push({ id: ++counters.path, pts: draft });
+  else return;
   draft = [];
   renderAll(); updateHint();
 }
@@ -421,6 +435,7 @@ function allPoints() {
   const out = [];
   data.refs.forEach(r => out.push(r.a, r.b));
   data.lines.forEach(l => out.push(l.a, l.b));
+  data.paths.forEach(p => out.push(...p.pts));
   data.areas.forEach(a => out.push(...a.pts));
   return out;
 }
@@ -469,10 +484,10 @@ cv.addEventListener('pointerup', e => {
 });
 cv.addEventListener('pointerleave', () => { cursor = null; draw(); });
 cv.addEventListener('dblclick', e => {
-  if (tool !== 'area' || !img) return;
+  if ((tool !== 'area' && tool !== 'path') || !img) return;
   // the two clicks of the double-click each added a point; drop the duplicate
   draft.pop();
-  finishArea();
+  finishShape();
 });
 
 function click(s) {
@@ -487,7 +502,9 @@ function click(s) {
       renderAll();
     }
   } else if (tool === 'area') {
-    if (draft.length >= 3 && dist(toScreen(draft[0]), s) < 10) return finishArea();
+    if (draft.length >= 3 && dist(toScreen(draft[0]), s) < 10) return finishShape();
+    draft.push(p);
+  } else if (tool === 'path') {
     draft.push(p);
   }
   updateHint(); draw();
@@ -551,7 +568,7 @@ function draw() {
   ctx.drawImage(img, view.x, view.y, img.width * view.k, img.height * view.k);
 
   const sc = scale(), u = unit();
-  const ref = css('--ref'), line = css('--line'), area = css('--area');
+  const ref = css('--ref'), line = css('--line'), pathColor = css('--path'), area = css('--area');
   const inProgress = pendingRef ? [pendingRef.a, pendingRef.b] : null;
 
   data.areas.forEach(a => {
@@ -561,16 +578,28 @@ function draw() {
     a.pts.forEach(p => dot(toScreen(p), area));
     label(fmt(polyArea(a.pts) / (sc * sc)) + ' ' + u + '²', toScreen(centroid(a.pts)), area);
   });
+  data.paths.forEach(p => {
+    path(p.pts, false);
+    ctx.lineWidth = 2; ctx.strokeStyle = pathColor; ctx.stroke();
+    p.pts.forEach(pt => dot(toScreen(pt), pathColor));
+    label(fmt(pathLength(p.pts) / sc) + ' ' + u, toScreen(centroid(p.pts)), pathColor);
+  });
   data.lines.forEach(l => drawSegment(l.a, l.b, line, fmt(dist(l.a, l.b) / sc) + ' ' + u));
   data.refs.forEach(r => drawSegment(r.a, r.b, ref, fmt(r.length) + ' ' + u));
   if (inProgress) drawSegment(inProgress[0], inProgress[1], ref, null);
 
   // shape being drawn
-  const color = tool === 'ref' ? ref : tool === 'line' ? line : area;
+  const color = tool === 'ref' ? ref : tool === 'line' ? line : tool === 'path' ? pathColor : area;
   const cur = cursor && !drag?.moved ? toImg(cursor) : null;
   if (draft.length && (tool === 'ref' || tool === 'line')) {
     dot(toScreen(draft[0]), color);
     if (cur) drawSegment(draft[0], cur, color, tool === 'line' ? fmt(dist(draft[0], cur) / sc) + ' ' + u : null, true);
+  } else if (tool === 'path' && draft.length) {
+    const pts = cur ? [...draft, cur] : draft;
+    path(pts, false);
+    ctx.lineWidth = 2; ctx.strokeStyle = pathColor; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
+    draft.forEach(p => dot(toScreen(p), pathColor));
+    if (pts.length >= 2) label(fmt(pathLength(pts) / sc) + ' ' + u, toScreen(pts[pts.length - 1]), pathColor);
   } else if (tool === 'area' && draft.length) {
     const pts = cur ? [...draft, cur] : draft;
     path(pts, pts.length >= 3);
@@ -646,6 +675,10 @@ function renderLists() {
     item(css('--line'), `Line ${l.id}`, null, h('span', { className: 'val' }, `${fmt(dist(l.a, l.b) / sc)} ${u}`),
       () => { data.lines = data.lines.filter(x => x !== l); renderAll(); })), 'None');
 
+  fill('pathList', data.paths.map(p =>
+    item(css('--path'), `Path ${p.id}`, `${p.pts.length} points`, h('span', { className: 'val' }, `${fmt(pathLength(p.pts) / sc)} ${u}`),
+      () => { data.paths = data.paths.filter(x => x !== p); renderAll(); })), 'None');
+
   fill('areaList', data.areas.map(a =>
     item(css('--area'), `Area ${a.id}`, `Perimeter ${fmt(perimeter(a.pts) / sc)} ${u}`,
       h('span', { className: 'val' }, `${fmt(polyArea(a.pts) / (sc * sc))} ${u}²`),
@@ -653,10 +686,11 @@ function renderLists() {
 
   $('refCount').textContent = data.refs.length + (data.imported ? 1 : 0);
   $('lineCount').textContent = data.lines.length;
+  $('pathCount').textContent = data.paths.length;
   $('areaCount').textContent = data.areas.length;
-  $('clearData').disabled = !(data.refs.length || data.lines.length || data.areas.length);
+  $('clearData').disabled = !(data.refs.length || data.lines.length || data.paths.length || data.areas.length);
   $('deleteImage').disabled = !img;
-  ['line', 'area'].forEach(t => document.querySelector(`[data-tool=${t}]`).disabled = !sc);
+  ['line', 'path', 'area'].forEach(t => document.querySelector(`[data-tool=${t}]`).disabled = !sc);
 }
 function renderAll() { renderLists(); draw(); scheduleSave(); }
 
