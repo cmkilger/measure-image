@@ -595,11 +595,12 @@ function fill(listId, items, emptyText) {
   const ul = $(listId);
   ul.replaceChildren(...(items.length ? items : [h('li', { className: 'none', style: 'border:0' }, emptyText)]));
 }
-function item(color, name, sub, value, del) {
+function item(color, name, sub, value, del, stacked) {
   const nm = h('span', { className: 'name' }, name);
+  if (stacked && value) { value.style.display = 'block'; nm.append(value); }
   if (sub) nm.append(h('div', { className: 'sub' }, sub));
   const kids = [h('span', { className: 'dot', style: `background:${color}` }), nm];
-  if (value) kids.push(value);
+  if (value && !stacked) kids.push(value);
   kids.push(h('button', { title: 'Delete', textContent: '✕', onclick: del }));
   return h('li', {}, ...kids);
 }
@@ -635,7 +636,7 @@ function renderLists() {
       data.imported = null;
       if (!scale() && (tool === 'line' || tool === 'area')) setTool('select');
       renderAll(); updateHint();
-    });
+    }, true);
     if (warn) li.querySelector('.sub').classList.add('warn');
     refRows.push(li);
   }
