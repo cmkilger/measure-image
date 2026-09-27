@@ -41,6 +41,10 @@
   aside { background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; padding: 14px; }
   aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 6px; }
   aside h2:first-child { margin-top: 0; }
+  summary { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+            margin: 18px 0 6px; cursor: pointer; user-select: none; }
+  .badge { display: inline-block; min-width: 18px; padding: 0 6px; margin-left: 4px; border-radius: 9px;
+           background: var(--bg); border: 1px solid var(--border); text-align: center; letter-spacing: 0; }
   .field { display: flex; align-items: center; gap: 8px; }
   input[type=text], input[type=number] { background: var(--bg); border: 1px solid var(--border);
       border-radius: 6px; padding: 4px 8px; width: 90px; }
@@ -94,12 +98,18 @@
   <div class="field"><label for="unit">Unit</label><input id="unit" type="text" value="m" maxlength="8"></div>
   <div id="scaleInfo" class="none"></div>
 
-  <h2>Known distances</h2>
-  <ul id="refList"></ul>
-  <h2>Lines</h2>
-  <ul id="lineList"></ul>
-  <h2>Areas</h2>
-  <ul id="areaList"></ul>
+  <details open>
+    <summary>Known distances <span class="badge" id="refCount">0</span></summary>
+    <ul id="refList"></ul>
+  </details>
+  <details open>
+    <summary>Lines <span class="badge" id="lineCount">0</span></summary>
+    <ul id="lineList"></ul>
+  </details>
+  <details open>
+    <summary>Areas <span class="badge" id="areaCount">0</span></summary>
+    <ul id="areaList"></ul>
+  </details>
 
   <h2>This image</h2>
   <div class="actions">
@@ -584,6 +594,9 @@ function renderLists() {
       h('span', { className: 'val' }, `${fmt(polyArea(a.pts) / (sc * sc))} ${u}²`),
       () => { data.areas = data.areas.filter(x => x !== a); renderAll(); })), 'None');
 
+  $('refCount').textContent = data.refs.length;
+  $('lineCount').textContent = data.lines.length;
+  $('areaCount').textContent = data.areas.length;
   $('clearData').disabled = !(data.refs.length || data.lines.length || data.areas.length);
   $('deleteImage').disabled = !img;
   ['line', 'area'].forEach(t => document.querySelector(`[data-tool=${t}]`).disabled = !sc);
